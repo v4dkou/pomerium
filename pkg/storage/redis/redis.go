@@ -3,7 +3,6 @@ package redis
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
 	"strconv"
@@ -31,13 +30,14 @@ var _ storage.Backend = (*DB)(nil)
 
 // DB wraps redis conn to interact with redis server.
 type DB struct {
+	cfg *dbConfig
+
 	pool                  *redis.Pool
 	recordType            string
 	lastVersionKey        string
 	lastVersionChannelKey string
 	versionSet            string
 	deletedSet            string
-	tlsConfig             *tls.Config
 	notifyChMu            sync.Mutex
 
 	closeOnce sync.Once
@@ -45,23 +45,20 @@ type DB struct {
 }
 
 // New returns new DB instance.
-func New(rawURL, recordType string, opts ...Option) (*DB, error) {
+func New(rawURL string, opts ...Option) (*DB, error) {
 	db := &DB{
-		recordType:            recordType,
-		versionSet:            recordType + "_version_set",
-		deletedSet:            recordType + "_deleted_set",
-		lastVersionKey:        recordType + "_last_version",
-		lastVersionChannelKey: recordType + "_last_version_ch",
-		closed:                make(chan struct{}),
+		cfg:    getConfig(opts...),
+		closed: make(chan struct{}),
 	}
+	db.versionSet = db.cfg.recordType + "_version_set"
+	db.deletedSet = db.cfg.recordType + "_deleted_set"
+	db.lastVersionKey = db.cfg.recordType + "_last_version"
+	db.lastVersionChannelKey = db.cfg.recordType + "_last_version_ch"
 
-	for _, o := range opts {
-		o(db)
-	}
 	db.pool = &redis.Pool{
 		Wait: true,
 		Dial: func() (redis.Conn, error) {
-			c, err := redis.DialURL(rawURL, redis.DialTLSConfig(db.tlsConfig))
+			c, err := redis.DialURL(rawURL, redis.DialTLSConfig(db.cfg.tls))
 			if err != nil {
 				return nil, fmt.Errorf(`redis.DialURL(): %w`, err)
 			}
@@ -191,7 +188,7 @@ func (db *DB) List(ctx context.Context, sinceVersion string) (rec []*databroker.
 	return pbRecords, nil
 }
 
-// Delete sets a record DeletedAt field and set its TTL.
+// Delete sets a record DeletedAt field and setRecord its TTL.
 func (db *DB) Delete(ctx context.Context, id string) (err error) {
 	c := db.pool.Get()
 	_, span := trace.StartSpan(ctx, "databroker.redis.Delete")
